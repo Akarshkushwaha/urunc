@@ -37,8 +37,8 @@ framework. An `initrd` is a CPIO archive; a `block` rootfs is a disk image;
 snapshotter. Bunny can create an initrd or assemble a raw rootfs from an
 `include` list, including files from other OCI images. In a bunnyfile,
 `type: block` packages an existing image selected by `rootfs.from` and
-`rootfs.path`; it does not generate the filesystem. To create a block image
-with bunny's standard Containerfile frontend, use a build stage as shown below.
+`rootfs.path`; it does not generate the filesystem. A standard Containerfile
+can create a block filesystem using tools in a build stage.
 Bunix packages existing files but does not create the rootfs.
 
 ## Creating an initrd file
@@ -91,48 +91,6 @@ We can build the OCI image with the following command:
 ```bash
 docker build -f bunnyfile -t urunc/prebuilt/redis-unikraft-qemu:test .
 ```
-
-## Creating a block image with a Containerfile
-
-Bunny supports standard multi-stage builds, so filesystem tools can create a
-block image in a build stage without mounting it on the host. This example
-puts BusyBox and urunit into an ext2 rootfs:
-
-```Dockerfile
-#syntax=harbor.nbfc.io/nubificus/bunny:latest
-FROM busybox:musl AS guest
-FROM harbor.nbfc.io/nubificus/urunit:latest AS init
-FROM alpine:3.22 AS filesystem
-RUN apk add --no-cache e2fsprogs
-COPY --from=guest / /guest-rootfs/
-COPY --from=init /urunit /guest-rootfs/urunit
-RUN truncate -s 64M /rootfs.ext2 \
-    && mkfs.ext2 -F -d /guest-rootfs /rootfs.ext2
-
-FROM scratch
-COPY --from=filesystem /rootfs.ext2 /rootfs.ext2
-LABEL com.urunc.unikernel.block="/rootfs.ext2"
-LABEL com.urunc.unikernel.blkMntPoint="/"
-LABEL bunny.urunit=false
-ENV URUNIT_POWEROFF=1
-ENTRYPOINT ["/urunit"]
-CMD ["/bin/echo", "hello from a block rootfs"]
-```
-
-The final stage uses bunny's default Linux/QEMU kernel. The block annotations
-select the generated disk image as the guest rootfs. Since urunit is already
-inside that filesystem, `bunny.urunit=false` disables the extra OCI-layer copy
-and entrypoint prefix. `URUNIT_POWEROFF=1` powers off the guest after the
-application finishes.
-
-Save the file as `Containerfile`, then build and run it:
-
-```bash
-docker build -f Containerfile -t urunc/block-rootfs:test .
-docker run --rm --runtime io.containerd.urunc.v2 urunc/block-rootfs:test
-```
-
-The guest prints `hello from a block rootfs` and exits.
 
 ## Preparing an OCI image to be used as a rootfs for the unikernel
 
