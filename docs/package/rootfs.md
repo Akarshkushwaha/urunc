@@ -29,9 +29,17 @@ Therefore, the users have the following options:
    the unikernel.
 2. Directly copy all the files to the container's rootfs and use devmapper
    snapshotter or shared-fs to pass the container's rootfs to the unikernel.
-3. Let [bunny](https://github.com/nubificus/bunny) and [bunix](https://github.com/nubificus/bunix) create the rootfs file.
+3. Use [bunny](https://github.com/nubificus/bunny) to build a rootfs with a bunnyfile or a standard Containerfile.
 
-> **NOTE**: For the time being, [bunny](https://github.com/nubificus/bunny) supports the creation of initrd files and [bunix](https://github.com/nubificus/bunix) does not provide any support for creating the rootfs.
+Bunny supports `initrd`, `block` and `raw` rootfs types, depending on the guest
+framework. An `initrd` is a CPIO archive; a `block` rootfs is a disk image;
+`raw` copies files directly into the OCI image for shared-fs or a block-based
+snapshotter. Bunny can create an initrd or assemble a raw rootfs from an
+`include` list, including files from other OCI images. In a bunnyfile,
+`type: block` packages an existing image selected by `rootfs.from` and
+`rootfs.path`; it does not generate the filesystem. To create a block image
+with bunny's standard Containerfile frontend, use a build stage as shown below.
+Bunix packages existing files but does not create the rootfs.
 
 ## Creating an initrd file
 
@@ -63,7 +71,7 @@ kernel:
   from: local
   path: redis-qemu-x86_64-initrd_qemu-x86_64
 
-cmdline: "redis-server /conf/redis.conf"
+cmd: ["redis-server", "/conf/redis.conf"]
 ```
 
 In the above file we specify the following:
@@ -72,7 +80,7 @@ In the above file we specify the following:
   x86 architecture.
 - We want to create from `scratch` a rootfs with `initrd` as its type. In
   particular, we want an initrd file that contains the file `redis.conf` in
-  `/data/conf/redis.conf`. In that way, [bunny](https://github.com/nubificus/bunny) creates the initrd file for us
+  `/conf/redis.conf`. In that way, [bunny](https://github.com/nubificus/bunny) creates the initrd file for us
   and sets up the respective `urunc` annotations to attach this initrd file
   when we boot the unikernel.
 - We want to use the `redis-qemu-x86_64-initrd_qemu-x86_64` binary from the local build context as the unikernel to boot.
@@ -83,6 +91,48 @@ We can build the OCI image with the following command:
 ```bash
 docker build -f bunnyfile -t urunc/prebuilt/redis-unikraft-qemu:test .
 ```
+
+## Creating a block image with a Containerfile
+
+Bunny supports standard multi-stage builds, so filesystem tools can create a
+block image in a build stage without mounting it on the host. This example
+puts BusyBox and urunit into an ext2 rootfs:
+
+```Dockerfile
+#syntax=harbor.nbfc.io/nubificus/bunny:latest
+FROM busybox:musl AS guest
+FROM harbor.nbfc.io/nubificus/urunit:latest AS init
+FROM alpine:3.22 AS filesystem
+RUN apk add --no-cache e2fsprogs
+COPY --from=guest / /guest-rootfs/
+COPY --from=init /urunit /guest-rootfs/urunit
+RUN truncate -s 64M /rootfs.ext2 \
+    && mkfs.ext2 -F -d /guest-rootfs /rootfs.ext2
+
+FROM scratch
+COPY --from=filesystem /rootfs.ext2 /rootfs.ext2
+LABEL com.urunc.unikernel.block="/rootfs.ext2"
+LABEL com.urunc.unikernel.blkMntPoint="/"
+LABEL bunny.urunit=false
+ENV URUNIT_POWEROFF=1
+ENTRYPOINT ["/urunit"]
+CMD ["/bin/echo", "hello from a block rootfs"]
+```
+
+The final stage uses bunny's default Linux/QEMU kernel. The block annotations
+select the generated disk image as the guest rootfs. Since urunit is already
+inside that filesystem, `bunny.urunit=false` disables the extra OCI-layer copy
+and entrypoint prefix. `URUNIT_POWEROFF=1` powers off the guest after the
+application finishes.
+
+Save the file as `Containerfile`, then build and run it:
+
+```bash
+docker build -f Containerfile -t urunc/block-rootfs:test .
+docker run --rm --runtime io.containerd.urunc.v2 urunc/block-rootfs:test
+```
+
+The guest prints `hello from a block rootfs` and exits.
 
 ## Preparing an OCI image to be used as a rootfs for the unikernel
 
@@ -137,7 +187,7 @@ kernel:
   from: local
   path: redis.hvt
 
-cmdline: "redis-server /data/conf/redis.conf"
+cmd: ["redis-server", "/data/conf/redis.conf"]
 ```
 
 In the above file we specify the following:
@@ -282,7 +332,7 @@ kernel:
   from: local
   path: app-elfloader-qemu-x86_64-initrd_qemu-x86_64
 
-cmdline: "/chttp"
+cmd: ["/chttp"]
 ```
 
 In the above file we specify the following:
